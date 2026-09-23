@@ -90,6 +90,14 @@ jobs:
         continue-on-error: true
         run: pnpm --filter @deepseek-ai/dsh-desktop run build
 
+      # 官方 package-target 要求发布字段只从 apps/desktop/.env.macos 读（不回落 shell env），
+      # 干净检出上没有这个文件（.gitignore 掉了），先写进去。
+      - name: 写入 apps/desktop/.env.macos
+        run: |
+          cp "$GITHUB_WORKSPACE/config/env.macos" src/apps/desktop/.env.macos
+          echo "--- 已写入 ---"
+          sed -n '1,20p' src/apps/desktop/.env.macos
+
       - name: 准备桌面目标（官方 prepare-only，无需 Apple 凭据）
         working-directory: src
         run: pnpm run prepare:desktop
