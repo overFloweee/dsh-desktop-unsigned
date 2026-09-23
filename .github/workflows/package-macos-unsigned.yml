@@ -75,6 +75,21 @@ jobs:
         working-directory: src
         run: pnpm install --no-frozen-lockfile
 
+      # 上游从 0.1.7-alpha.1 起，apps/desktop/scripts/macos-notarization-proxy.ts 在**模块顶层**
+      # 静态 import 了 @deepseek-ai/node-addon-system/lib/flock.js，而 native/system 的 lib/ 是
+      # `tsc -b` 的产物、**不在 git 里**。package:desktop 自己那条链要在脚本跑起来之后才构建它，
+      # 于是干净检出上 tsx 一加载脚本就 ERR_MODULE_NOT_FOUND。先单独编出来即可。
+      - name: 构建 native/system 的 JS 产物（lib/ 不在 git 里）
+        working-directory: src
+        run: pnpm --dir native/system run build:ts
+
+      # electron-builder 只收集 dependencies（workspace 包若只写在 devDependencies 会缺），
+      # 先跑一次 desktop build 让链接就位；失败不致命，继续往下走。
+      - name: 预构建 desktop 包（失败不致命）
+        working-directory: src
+        continue-on-error: true
+        run: pnpm --filter @deepseek-ai/dsh-desktop run build
+
       - name: 准备桌面目标（官方 prepare-only，无需 Apple 凭据）
         working-directory: src
         run: pnpm run prepare:desktop
