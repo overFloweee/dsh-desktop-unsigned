@@ -90,13 +90,25 @@ jobs:
         continue-on-error: true
         run: pnpm --filter @deepseek-ai/dsh-desktop run build
 
+      # 官方 validateDesktopPackageEnvironment 在 darwin 上即使 prepare-only 也要求 CSC_LINK
+      # 指向一个**可读文件**（这里只做可读性校验，不会真的用它签名）。生成一个一次性的
+      # 自签名 p12，既通过校验，也不依赖任何真实证书。
+      - name: 生成一次性自签名 p12（仅用于通过可读性校验）
+        run: |
+          openssl req -x509 -newkey rsa:2048 -keyout /tmp/ci-key.pem -out /tmp/ci-cert.pem \
+            -days 1 -nodes -subj "/CN=DSH CI Unsigned" 2>/dev/null
+          openssl pkcs12 -export -out src/apps/desktop/ci-dummy.p12 \
+            -inkey /tmp/ci-key.pem -in /tmp/ci-cert.pem -passout pass: 2>/dev/null
+          ls -la src/apps/desktop/ci-dummy.p12
+          openssl pkcs12 -info -in src/apps/desktop/ci-dummy.p12 -passin pass: -noout 2>&1 | head -3
+
       # 官方 package-target 要求发布字段只从 apps/desktop/.env.macos 读（不回落 shell env），
       # 干净检出上没有这个文件（.gitignore 掉了），先写进去。
       - name: 写入 apps/desktop/.env.macos
         run: |
           cp "$GITHUB_WORKSPACE/config/env.macos" src/apps/desktop/.env.macos
           echo "--- 已写入 ---"
-          sed -n '1,20p' src/apps/desktop/.env.macos
+          sed -n '1,24p' src/apps/desktop/.env.macos
 
       - name: 准备桌面目标（官方 prepare-only，无需 Apple 凭据）
         working-directory: src
