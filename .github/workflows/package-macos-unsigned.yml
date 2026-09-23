@@ -1,0 +1,126 @@
+name: package-macos-unsigned
+
+# 在 GitHub Actions 上把**官方** DeepSeek Harness 桌面端打成 macOS 未签名 .app，
+# 用于本地自用（官方 macOS 打包链要求 Developer ID 证书 + 公证，本流程刻意绕过）。
+#
+# 只做两件重活：
+#   1) 官方 `pnpm run prepare:desktop`（= package-target --prepare-only，**不需要任何 Apple 凭据**）
+#   2) 用 config/unsigned-mac.config.mjs 覆盖 electron-builder 的签名/公证设置，出 dir 目标（.app）
+#
+# 产物：`DeepSeek-Harness-<tag>-mac-arm64-unsigned.zip`（Actions artifact + Release）
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '上游 tag（deepseek-ai/deepseek-harness）'
+        required: false
+        default: 'dsh-v0.1.7-alpha.1'
+      publish_release:
+        description: '把产物发布成 Release（方便直接下载）'
+        type: boolean
+        default: true
+  # 想每天自动跟一版就把下面注释打开（默认关闭，避免白烧 CI 分钟）
+  # schedule:
+  #   - cron: '30 20 * * *'
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: macos-14            # Apple Silicon（arm64）
+    timeout-minutes: 90
+
+    env:
+      # ── 目标 ──────────────────────────────────────────────
+      DSH_DESKTOP_TARGET_PLATFORM: darwin
+      DSH_DESKTOP_TARGET_ARCH: arm64
+      DSH_DESKTOP_APP_ID: com.deepseek.harness
+      # 自动更新信息只是被写进元数据；这里用 test 通道的公开 origin 占位
+      DSH_DESKTOP_AUTO_UPDATE_ENV: test
+      DOWNLOAD_TEST_ORIGIN: https://download-test.deepseek.com
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      # ── 让官方配置工厂能通过"形状校验"的假凭据（不会被真用）──
+      DSH_DESKTOP_MACOS_SIGNING_IDENTITY: CI_UNSIGNED_BUILD
+      DSH_DESKTOP_MACOS_TEAM_ID: AAAAAAAAAA
+      APPLE_ID: ci@example.com
+      APPLE_APP_SPECIFIC_PASSWORD: ci-not-a-real-password
+      APPLE_TEAM_ID: AAAAAAAAAA
+
+    steps:
+      - name: Checkout 本仓库（取构建配置）
+        uses: actions/checkout@v4
+
+      - name: Checkout 上游仓库（指定 tag）
+        uses: actions/checkout@v4
+        with:
+          repository: deepseek-ai/deepseek-harness
+          ref: ${{ inputs.tag }}
+          path: src
+          fetch-depth: 1
+
+      - name: Setup Node 22.19
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.19.0'
+
+      - name: 启用 pnpm 11.7.0
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.7.0 --activate
+          pnpm --version
+
+      - name: 安装依赖
+        working-directory: src
+        run: pnpm install --no-frozen-lockfile
+
+      - name: 准备桌面目标（官方 prepare-only，无需 Apple 凭据）
+        working-directory: src
+        run: pnpm run prepare:desktop
+
+      - name: 打未签名 .app（electron-builder --mac dir）
+        working-directory: src/apps/desktop
+        run: |
+          cp "$GITHUB_WORKSPACE/config/unsigned-mac.config.mjs" ./unsigned-mac.config.mjs
+          pnpm exec electron-builder --config unsigned-mac.config.mjs --mac dir
+          echo "--- 产物 ---"
+          find . -maxdepth 3 -name '*.app' -type d | head
+
+      - name: 收集产物
+        id: collect
+        run: |
+          set -e
+          APP=$(find src/apps/desktop/dist-unsigned -maxdepth 3 -name '*.app' -type d | head -1)
+          if [ -z "$APP" ]; then
+            echo "::error::没有找到 .app，打包步骤可能失败了"
+            exit 1
+          fi
+          echo "找到: $APP"
+          NAME="DeepSeek-Harness-${{ inputs.tag }}-mac-arm64-unsigned.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$NAME"
+          shasum -a 256 "$NAME" | tee "$NAME.sha256"
+          echo "zip=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-unsigned-app
+          path: |
+            *.zip
+            *.zip.sha256
+
+      - name: 发布 Release
+        if: ${{ inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="unsigned-${{ inputs.tag }}"
+          NOTES="未签名 macOS arm64 构建，源码来自上游 ${{ inputs.tag }}。
+          自建产物，**不是官方发布**：首次打开需要右键 → 打开，或执行
+          \`xattr -dr com.apple.quarantine \"DeepSeek Harness.app\"\`。
+          无自动更新（app-update.yml 依赖签名）。"
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" --notes "$NOTES" *.zip *.zip.sha256 \
+          || gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber *.zip *.zip.sha256
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json url --jq .url
