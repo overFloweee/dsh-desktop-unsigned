@@ -54,6 +54,13 @@ jobs:
       APPLE_TEAM_ID: AAAAAAAAAA
 
     steps:
+      - name: 先看磁盘（并释放 Android SDK 等用不到的大件）
+        run: |
+          df -h / | tail -1
+          sudo rm -rf ~/Library/Android/sdk || true
+          rm -rf ~/.gradle ~/.cargo/registry/cache || true
+          df -h / | tail -1
+
       - name: Checkout 本仓库（取构建配置）
         uses: actions/checkout@v4
 
@@ -79,6 +86,26 @@ jobs:
       - name: 安装依赖
         working-directory: src
         run: pnpm install --no-frozen-lockfile
+
+      # 官方在 darwin 上**无论 prepare-only 与否**都会 withMacOSSigningKeychain（把 p12 导入临时
+      # keychain）。未签名自建构建不需要它，所以精确打一处补丁：直接调 packageTarget，不套 keychain。
+      # 只改 CI 里的检出副本（上游仓库不动）。
+      - name: 补丁：跳过 macOS keychain 导入（未签名构建用）
+        working-directory: src
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('apps/desktop/scripts/package-target.ts')
+          s = p.read_text()
+          old = """      await packagingStep(run.directory, 'macos-package', () => withMacOSSigningKeychain(environment,
+        signingEnvironment => packageTarget(invocation, signingEnvironment, run)), secrets)"""
+          new = """      // [CI unsigned patch] 跳过 keychain 导入：本流程不签名、不公证
+      await packagingStep(run.directory, 'macos-package', () => packageTarget(invocation, environment, run), secrets)"""
+          if old not in s:
+              raise SystemExit('patch anchor not found — 上游改了这段，需要更新补丁')
+          p.write_text(s.replace(old, new, 1))
+          print('已打补丁：跳过 withMacOSSigningKeychain')
+          PY
 
       # 上游从 0.1.7-alpha.1 起，apps/desktop/scripts/macos-notarization-proxy.ts 在**模块顶层**
       # 静态 import 了 @deepseek-ai/node-addon-system/lib/flock.js，而 native/system 的 lib/ 是
