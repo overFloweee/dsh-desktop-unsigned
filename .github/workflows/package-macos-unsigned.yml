@@ -40,6 +40,11 @@ jobs:
       # 自动更新信息只是被写进元数据；这里用 test 通道的公开 origin 占位
       DSH_DESKTOP_AUTO_UPDATE_ENV: test
       DOWNLOAD_TEST_ORIGIN: https://download-test.deepseek.com
+      DOWNLOAD_TEST_RELEASE_ID: 0123456789abcdef0123456789abcdef
+      # 强制更新策略：test 部署必须有 origin + allowedAuthOrigins（electron-builder 那步
+      # 的配置工厂直接读 process.env，所以这里也必须给）
+      DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN: https://harness-test.deepseek.com
+      DSH_DESKTOP_MANDATORY_UPDATE_CONFIG: '{"allowedAuthOrigins":["https://harness-test.deepseek.com"]}'
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       # ── 让官方配置工厂能通过"形状校验"的假凭据（不会被真用）──
       DSH_DESKTOP_MACOS_SIGNING_IDENTITY: CI_UNSIGNED_BUILD
