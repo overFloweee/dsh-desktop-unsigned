@@ -92,20 +92,7 @@ jobs:
       # 只改 CI 里的检出副本（上游仓库不动）。
       - name: 补丁：跳过 macOS keychain 导入（未签名构建用）
         working-directory: src
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('apps/desktop/scripts/package-target.ts')
-          s = p.read_text()
-          old = """      await packagingStep(run.directory, 'macos-package', () => withMacOSSigningKeychain(environment,
-        signingEnvironment => packageTarget(invocation, signingEnvironment, run)), secrets)"""
-          new = """      // [CI unsigned patch] 跳过 keychain 导入：本流程不签名、不公证
-      await packagingStep(run.directory, 'macos-package', () => packageTarget(invocation, environment, run), secrets)"""
-          if old not in s:
-              raise SystemExit('patch anchor not found — 上游改了这段，需要更新补丁')
-          p.write_text(s.replace(old, new, 1))
-          print('已打补丁：跳过 withMacOSSigningKeychain')
-          PY
+        run: python3 "$GITHUB_WORKSPACE/config/patch-package-target.py"
 
       # 上游从 0.1.7-alpha.1 起，apps/desktop/scripts/macos-notarization-proxy.ts 在**模块顶层**
       # 静态 import 了 @deepseek-ai/node-addon-system/lib/flock.js，而 native/system 的 lib/ 是
