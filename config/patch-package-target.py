@@ -5,8 +5,12 @@
 `withMacOSSigningKeychain(...)`（把 CSC_LINK 指向的 p12 导入临时 keychain）。未签名自建
 构建不需要它，而且自签名 p12 会被 `security import` 拒绝。
 
-这里把那一处调用改成直接调用 `packageTarget(invocation, environment, run)`，不再套 keychain。
-只作用于 CI 检出的上游副本，不改上游仓库。
+改动两处（只作用于 CI 检出的上游副本）：
+  1. 调用点：`withMacOSSigningKeychain(environment, cb => packageTarget(...))`
+     → 直接 `packageTarget(invocation, environment, run)`
+  2. 该模块的 import 行：删掉后它会变成未使用变量，tsc 的 noUnusedLocals 会报
+     `error TS6133: 'withMacOSSigningKeychain' is declared but its value is never read`
+     （实测踩过），所以一并注释掉。
 
 用法（在 src/ 目录下）：python3 <this-file>
 """
@@ -15,15 +19,17 @@ import sys
 
 TARGET = Path("apps/desktop/scripts/package-target.ts")
 
-OLD = "\n".join([
+CALL_OLD = "\n".join([
     "      await packagingStep(run.directory, 'macos-package', () => withMacOSSigningKeychain(environment,",
     "        signingEnvironment => packageTarget(invocation, signingEnvironment, run)), secrets)",
 ])
-
-NEW = "\n".join([
+CALL_NEW = "\n".join([
     "      // [CI unsigned patch] 跳过 keychain 导入：本流程不签名、不公证",
     "      await packagingStep(run.directory, 'macos-package', () => packageTarget(invocation, environment, run), secrets)",
 ])
+
+IMPORT_OLD = "import { withMacOSSigningKeychain } from './macos-signing-keychain.mjs'"
+IMPORT_NEW = "// [CI unsigned patch] withMacOSSigningKeychain 不再使用（见下方 macOS 打包分支）"
 
 
 def main() -> int:
@@ -31,14 +37,31 @@ def main() -> int:
         print(f"patch: 找不到 {TARGET}（cwd={Path.cwd()}）", file=sys.stderr)
         return 1
     source = TARGET.read_text(encoding="utf8")
-    if NEW in source:
-        print("patch: 已打过，跳过")
-        return 0
-    if OLD not in source:
-        print("patch: 锚点没找到——上游改了这段代码，需要更新补丁", file=sys.stderr)
+    changed = []
+
+    if IMPORT_NEW in source:
+        pass
+    elif IMPORT_OLD in source:
+        source = source.replace(IMPORT_OLD, IMPORT_NEW, 1)
+        changed.append("import")
+    else:
+        print("patch: import 锚点没找到——上游改了这段代码，需要更新补丁", file=sys.stderr)
         return 1
-    TARGET.write_text(source.replace(OLD, NEW, 1), encoding="utf8")
-    print("patch: 已跳过 withMacOSSigningKeychain")
+
+    if CALL_NEW in source:
+        pass
+    elif CALL_OLD in source:
+        source = source.replace(CALL_OLD, CALL_NEW, 1)
+        changed.append("call")
+    else:
+        print("patch: 调用点锚点没找到——上游改了这段代码，需要更新补丁", file=sys.stderr)
+        return 1
+
+    if changed:
+        TARGET.write_text(source, encoding="utf8")
+        print(f"patch: 已应用（{'/'.join(changed)}）")
+    else:
+        print("patch: 已打过，跳过")
     return 0
 
 
