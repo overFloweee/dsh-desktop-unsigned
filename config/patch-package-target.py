@@ -1,67 +1,79 @@
 #!/usr/bin/env python3
-"""CI 专用补丁：跳过 macOS 签名 keychain 导入。
+"""CI 专用补丁：让官方的桌面打包链能在**未签名**模式下跑通 macOS 构建。
 
-背景：官方 `package-target.ts` 在 darwin 上**无论是否 prepare-only** 都会调用
-`withMacOSSigningKeychain(...)`（把 CSC_LINK 指向的 p12 导入临时 keychain）。未签名自建
-构建不需要它，而且自签名 p12 会被 `security import` 拒绝。
+只作用于 CI 检出的上游副本（src/），不改上游仓库。共三处，全部幂等：
 
-改动两处（只作用于 CI 检出的上游副本）：
-  1. 调用点：`withMacOSSigningKeychain(environment, cb => packageTarget(...))`
-     → 直接 `packageTarget(invocation, environment, run)`
-  2. 该模块的 import 行：删掉后它会变成未使用变量，tsc 的 noUnusedLocals 会报
-     `error TS6133: 'withMacOSSigningKeychain' is declared but its value is never read`
-     （实测踩过），所以一并注释掉。
+1. apps/desktop/scripts/package-target.ts
+   darwin 上**无论是否 prepare-only** 都会 `withMacOSSigningKeychain(...)`（导入 p12 到临时
+   keychain，自签名 p12 会被 `security import` 拒绝）→ 改成直接调用 packageTarget。
+   该 import 随之变成未使用变量，tsc 的 noUnusedLocals 会报 TS6133（实测踩过）→ 一并注释。
+
+2. apps/desktop/scripts/prepare-dsh.ts
+   darwin 上会 `signMacOSRuntime(...)` 签名 dsh 输出树与 primary-runtime，走 macOS 签名
+   缓存策略（内部调 `/usr/bin/codesign` 校验 probe）→ 未签名构建直接跳过该分支；
+   同样处理随之失效的两个 import（TS6133）。
 
 用法（在 src/ 目录下）：python3 <this-file>
 """
 from pathlib import Path
 import sys
 
-TARGET = Path("apps/desktop/scripts/package-target.ts")
+PACKAGE_TARGET = Path("apps/desktop/scripts/package-target.ts")
+PREPARE_DSH = Path("apps/desktop/scripts/prepare-dsh.ts")
 
-CALL_OLD = "\n".join([
+# —— 补丁 1：package-target.ts ——
+PT_IMPORT_OLD = "import { withMacOSSigningKeychain } from './macos-signing-keychain.mjs'"
+PT_IMPORT_NEW = "// [CI unsigned patch] withMacOSSigningKeychain 不再使用（见下方 macOS 打包分支）"
+PT_CALL_OLD = "\n".join([
     "      await packagingStep(run.directory, 'macos-package', () => withMacOSSigningKeychain(environment,",
     "        signingEnvironment => packageTarget(invocation, signingEnvironment, run)), secrets)",
 ])
-CALL_NEW = "\n".join([
+PT_CALL_NEW = "\n".join([
     "      // [CI unsigned patch] 跳过 keychain 导入：本流程不签名、不公证",
     "      await packagingStep(run.directory, 'macos-package', () => packageTarget(invocation, environment, run), secrets)",
 ])
 
-IMPORT_OLD = "import { withMacOSSigningKeychain } from './macos-signing-keychain.mjs'"
-IMPORT_NEW = "// [CI unsigned patch] withMacOSSigningKeychain 不再使用（见下方 macOS 打包分支）"
+# —— 补丁 2：prepare-dsh.ts ——
+PD_BLOCK_OLD = "\n".join([
+    "    if (process.platform === 'darwin') {",
+    "      await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'sign:dsh-native', () => signMacOSRuntime(DSH_OUTPUT_ROOT, resolveDesktopAppId(process.env), resolveMacOSSigningEnvironment(process.env), join(BUILD_PATHS.root, 'signature-cache')))",
+    "      await packagingStep(process.env.DSH_DESKTOP_PACKAGING_RUN_DIR, 'sign:primary-native', () => signMacOSRuntime(join(RUNTIME_ROOT, 'primary-runtime'), resolveDesktopAppId(process.env), resolveMacOSSigningEnvironment(process.env), join(BUILD_PATHS.root, 'signature-cache')))",
+    "    }",
+])
+PD_BLOCK_NEW = "\n".join([
+    "    // [CI unsigned patch] 跳过 dsh 输出树与 primary-runtime 的 Mach-O 签名（未签名构建）",
+])
+PD_IMPORTS = [
+    ("  resolveMacOSSigningEnvironment,", "  // [CI unsigned patch] resolveMacOSSigningEnvironment,"),
+    ("  signMacOSRuntime,", "  // [CI unsigned patch] signMacOSRuntime,"),
+]
+
+
+def patch(path: Path, replacements, label: str) -> list[str]:
+    """Apply (old, new) replacements; skip ones already applied; error if an anchor is missing."""
+    if not path.is_file():
+        print(f"patch: 找不到 {path}（cwd={Path.cwd()}）", file=sys.stderr)
+        raise SystemExit(1)
+    source = path.read_text(encoding="utf8")
+    applied = []
+    for old, new in replacements:
+        if new in source:
+            continue
+        if old not in source:
+            print(f"patch: [{label}] 锚点没找到，需要更新补丁: {old.strip()[:70]}", file=sys.stderr)
+            raise SystemExit(1)
+        source = source.replace(old, new, 1)
+        applied.append(label)
+    if applied:
+        path.write_text(source, encoding="utf8")
+    return applied
 
 
 def main() -> int:
-    if not TARGET.is_file():
-        print(f"patch: 找不到 {TARGET}（cwd={Path.cwd()}）", file=sys.stderr)
-        return 1
-    source = TARGET.read_text(encoding="utf8")
-    changed = []
-
-    if IMPORT_NEW in source:
-        pass
-    elif IMPORT_OLD in source:
-        source = source.replace(IMPORT_OLD, IMPORT_NEW, 1)
-        changed.append("import")
-    else:
-        print("patch: import 锚点没找到——上游改了这段代码，需要更新补丁", file=sys.stderr)
-        return 1
-
-    if CALL_NEW in source:
-        pass
-    elif CALL_OLD in source:
-        source = source.replace(CALL_OLD, CALL_NEW, 1)
-        changed.append("call")
-    else:
-        print("patch: 调用点锚点没找到——上游改了这段代码，需要更新补丁", file=sys.stderr)
-        return 1
-
-    if changed:
-        TARGET.write_text(source, encoding="utf8")
-        print(f"patch: 已应用（{'/'.join(changed)}）")
-    else:
-        print("patch: 已打过，跳过")
+    applied = []
+    applied += patch(PACKAGE_TARGET, [(PT_IMPORT_OLD, PT_IMPORT_NEW), (PT_CALL_OLD, PT_CALL_NEW)], "package-target")
+    applied += patch(PREPARE_DSH, [(PD_BLOCK_OLD, PD_BLOCK_NEW), *PD_IMPORTS], "prepare-dsh")
+    print(f"patch: {'已应用 ' + '/'.join(applied) if applied else '已打过，跳过'}")
     return 0
 
 
