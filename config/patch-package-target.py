@@ -135,9 +135,18 @@ SHELL_MANIFEST = Path("apps/desktop/package.json")
 
 # shell 运行时需要、但上游声明在 devDependencies 的包。
 SHELL_RUNTIME_DEV_DEPS = [
+    # —— 第一层：shell 主进程直接裸 import 的（rc.1 实测首启即崩的那个）——
     "@deepseek-ai/dsh-home-paths",
     "@deepseek-ai/dsh-app-boot",
     "@deepseek-ai/dsh-deepseek-account",
+    # —— 第二层：上面这些包自己在运行时 import 的（electron-builder 不跟随
+    #    workspace 链接包的依赖，所以必须**逐个**提升到 shell 依赖里）——
+    "@deepseek-ai/cordis-plugin-loader",
+    "@deepseek-ai/cordis-plugin-group",
+    "@deepseek-ai/cordis-plugin-include",
+    "@deepseek-ai/dsh-client-connection",
+    "@deepseek-ai/dsh-launch-environment",
+    "@deepseek-ai/dsh-util-crypto",
 ]
 
 
@@ -154,10 +163,10 @@ def promote_runtime_dev_deps() -> list[str]:
             continue
         if name in dev:
             dependencies[name] = dev.pop(name)
-            moved.append(name)
         else:
-            print(f"patch: [shell] {name} 既不在 dependencies 也不在 devDependencies —— 上游改了清单，需要更新补丁", file=sys.stderr)
-            raise SystemExit(1)
+            # 上游可能根本没声明它（这些包是 workspace 内部的），按 workspace 链接补上。
+            dependencies[name] = "workspace:*"
+        moved.append(name)
     if moved:
         SHELL_MANIFEST.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf8")
     return moved
