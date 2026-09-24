@@ -86,13 +86,6 @@ jobs:
           corepack prepare pnpm@11.7.0 --activate
           pnpm --version
 
-      - name: 安装依赖
-        working-directory: src
-        run: pnpm install --no-frozen-lockfile
-
-      # 官方在 darwin 上**无论 prepare-only 与否**都会 withMacOSSigningKeychain（把 p12 导入临时
-      # keychain）。未签名自建构建不需要它，所以精确打一处补丁：直接调 packageTarget，不套 keychain。
-      # 只改 CI 里的检出副本（上游仓库不动）。
       - name: 补丁：跳过 macOS keychain 导入（未签名构建用）
         working-directory: src
         run: python3 "$GITHUB_WORKSPACE/config/patch-package-target.py"
@@ -101,6 +94,13 @@ jobs:
       # 静态 import 了 @deepseek-ai/node-addon-system/lib/flock.js，而 native/system 的 lib/ 是
       # `tsc -b` 的产物、**不在 git 里**。package:desktop 自己那条链要在脚本跑起来之后才构建它，
       # 于是干净检出上 tsx 一加载脚本就 ERR_MODULE_NOT_FOUND。先单独编出来即可。
+      - name: 安装依赖
+        working-directory: src
+        run: pnpm install --no-frozen-lockfile
+
+      # 官方在 darwin 上**无论 prepare-only 与否**都会 withMacOSSigningKeychain（把 p12 导入临时
+      # keychain）。未签名自建构建不需要它，所以精确打一处补丁：直接调 packageTarget，不套 keychain。
+      # 只改 CI 里的检出副本（上游仓库不动）。
       - name: 构建 native/system 的 JS 产物（lib/ 不在 git 里）
         working-directory: src
         run: pnpm --dir native/system run build:ts
