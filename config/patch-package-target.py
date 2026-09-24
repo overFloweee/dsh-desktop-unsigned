@@ -147,6 +147,15 @@ SHELL_RUNTIME_DEV_DEPS = [
     "@deepseek-ai/dsh-client-connection",
     "@deepseek-ai/dsh-launch-environment",
     "@deepseek-ai/dsh-util-crypto",
+    # —— 第三层：上面这批包继续往下 import 的（本地按源码算了整张闭包，取安全超集）——
+    "@deepseek-ai/dsh-scope",
+    "@deepseek-ai/dsh-invariants",
+    "@deepseek-ai/dsh-util-values",
+    "@deepseek-ai/dsh-session",
+    "@deepseek-ai/dsh-attachment",
+    "@deepseek-ai/dsh-llm",
+    "@deepseek-ai/dsh-system-prompt",
+    "@deepseek-ai/dsh-host-webserver",
 ]
 
 
