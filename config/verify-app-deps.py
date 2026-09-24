@@ -47,19 +47,32 @@ def load_asar(asar: str) -> tuple[dict[str, tuple[int, int]], object]:
     return entries, handle
 
 
+def walk_json_files(root: str, top: str) -> list[str]:
+    """在 root/top 下找 package.json —— **剪掉 node_modules**（否则要遍历几万个文件）。"""
+    out: list[str] = []
+    base = os.path.join(root, top)
+    for current, dirs, files in os.walk(base):
+        dirs[:] = [d for d in dirs if d not in {"node_modules", ".git", "dist", "lib"}]
+        if "package.json" in files:
+            out.append(os.path.join(current, "package.json"))
+    return out
+
+
 def workspace_dirs(repo: str) -> dict[str, str]:
     """仓库里 workspace 包名 → 目录（用于递归追踪未打包的包）。"""
     found: dict[str, str] = {}
-    patterns = ["packages/**/package.json", "vendor/**/package.json", "apps/*/package.json"]
-    for pattern in patterns:
-        for path in glob.glob(os.path.join(repo, pattern), recursive=True):
-            try:
-                manifest = json.load(open(path, encoding="utf8"))
-            except Exception:
-                continue
-            name = manifest.get("name")
-            if name:
-                found[name] = os.path.dirname(path)
+    candidates: list[str] = []
+    for top in ("packages", "vendor"):
+        candidates += walk_json_files(repo, top)
+    candidates += glob.glob(os.path.join(repo, "apps", "*", "package.json"))
+    for path in candidates:
+        try:
+            manifest = json.load(open(path, encoding="utf8"))
+        except Exception:
+            continue
+        name = manifest.get("name")
+        if name:
+            found[name] = os.path.dirname(path)
     return found
 
 
@@ -67,6 +80,8 @@ def imports_from_package_dir(directory: str) -> set[str]:
     out: set[str] = set()
     for ext in ("js", "mjs", "cjs"):
         for path in glob.glob(os.path.join(directory, "lib", "**", "*." + ext), recursive=True):
+            if "node_modules" in path:
+                continue
             try:
                 text = open(path, encoding="utf8", errors="ignore").read()
             except Exception:
