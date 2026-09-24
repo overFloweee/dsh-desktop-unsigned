@@ -36,8 +36,11 @@ jobs:
       # ── 目标 ──────────────────────────────────────────────
       DSH_DESKTOP_TARGET_PLATFORM: darwin
       DSH_DESKTOP_TARGET_ARCH: arm64
-      DSH_DESKTOP_APP_ID: com.deepseek.harness
-      # 自动更新信息只是被写进元数据；这里用 test 通道的公开 origin 占位
+      # 自建壳的独立身份（官方壳是 com.deepseek.dsh），避免与官方安装互相干扰
+      DSH_DESKTOP_APP_ID: com.deepseek.dsh.selfbuild
+      # 下面两组更新/策略变量只是喂给官方工厂的"形状校验"（工厂无条件解析它们）；
+      # config/unsigned-mac.config.mjs 会把 dshMandatoryUpdatePolicy 与 publish 从产物
+      # 元数据里抹掉，所以它们不会真的进壳、也不会让壳去连测试环境
       DSH_DESKTOP_AUTO_UPDATE_ENV: test
       DOWNLOAD_TEST_ORIGIN: https://download-test.deepseek.com
       DOWNLOAD_TEST_RELEASE_ID: 0123456789abcdef0123456789abcdef
@@ -172,8 +175,10 @@ jobs:
           TAG="unsigned-${{ inputs.tag }}"
           NOTES="未签名 macOS arm64 构建，源码来自上游 ${{ inputs.tag }}。
           自建产物，**不是官方发布**：首次打开需要右键 → 打开，或执行
-          \`xattr -dr com.apple.quarantine \"DeepSeek Harness.app\"\`。
-          无自动更新（app-update.yml 依赖签名）。"
+          \`xattr -dr com.apple.quarantine \"DeepSeek Harness (RC).app\"\`。
+          无自动更新（app-update.yml 依赖签名）。
+          干净壳：app id 为 com.deepseek.dsh.selfbuild、应用名带 (RC)、
+          产物元数据里已抹掉强制更新策略与更新 feed。"
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
             --title "$TAG" --notes "$NOTES" *.zip *.zip.sha256 \
           || gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber *.zip *.zip.sha256
