@@ -144,6 +144,14 @@ jobs:
           echo "--- 产物 ---"
           find . -maxdepth 3 -name '*.app' -type d | head
 
+      # 上游把 shell 运行时需要的三个包声明在 devDependencies 里，electron-builder 只收集
+      # dependencies → 产物缺包、壳一启动就崩。补丁挪了依赖，这里再断言**产物里真的有**。
+      - name: 校验产物依赖完整（防 shell 缺包导致首启崩溃）
+        working-directory: src
+        run: |
+          APP=$(find apps/desktop/dist-unsigned -maxdepth 3 -name '*.app' -type d | head -1)
+          python3 "$GITHUB_WORKSPACE/config/verify-app-deps.py" "$APP"
+
       - name: 收集产物
         id: collect
         run: |

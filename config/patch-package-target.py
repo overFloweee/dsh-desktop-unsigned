@@ -20,6 +20,7 @@
 用法（在 src/ 目录下）：python3 <this-file>
 """
 from pathlib import Path
+import json
 import re
 import sys
 
@@ -110,6 +111,58 @@ def neutralize_unused_imports(path: Path) -> list[str]:
     return commented
 
 
+#
+# 把 shell（Electron 主进程）**运行时真的会 import**、但上游声明成 devDependencies
+# 的包挪进 dependencies。
+#
+# 为什么必须这么做：上游工厂在 electron-builder 配置里显式关掉了自动的 production
+# node_modules 收集（`beforeBuild` 返回 true 之外的分支），改由 electron-builder 按
+#  **dependencies** 收集 —— 于是 devDependencies 里的包**不会进产物**。
+#
+# 而 rc.1 的 shell 产物 `lib/main.js`（tsdown 打包，`@deepseek-ai/*` 保持 external）
+# 里有这些裸 import：
+#     @deepseek-ai/dsh-home-paths        ← 首启即崩：ERR_MODULE_NOT_FOUND
+#     @deepseek-ai/dsh-app-boot
+#     @deepseek-ai/dsh-deepseek-account
+# 三个在 `apps/desktop/package.json` 里都是 devDependencies → 打出来的壳一启动就
+# 弹 "A JavaScript error occurred in the main process"。
+#
+# 这与上游给 cordis 做的修复（"declare the cordis peer the packaged application
+# needs"）同一类问题，只是官方这两个包还没改。
+ #
+
+SHELL_MANIFEST = Path("apps/desktop/package.json")
+
+# shell 运行时需要、但上游声明在 devDependencies 的包。
+SHELL_RUNTIME_DEV_DEPS = [
+    "@deepseek-ai/dsh-home-paths",
+    "@deepseek-ai/dsh-app-boot",
+    "@deepseek-ai/dsh-deepseek-account",
+]
+
+
+def promote_runtime_dev_deps() -> list[str]:
+    if not SHELL_MANIFEST.is_file():
+        print(f"patch: 找不到 {SHELL_MANIFEST}（cwd={Path.cwd()}）", file=sys.stderr)
+        raise SystemExit(1)
+    manifest = json.loads(SHELL_MANIFEST.read_text(encoding="utf8"))
+    dependencies = manifest.setdefault("dependencies", {})
+    dev = manifest.get("devDependencies", {})
+    moved = []
+    for name in SHELL_RUNTIME_DEV_DEPS:
+        if name in dependencies:
+            continue
+        if name in dev:
+            dependencies[name] = dev.pop(name)
+            moved.append(name)
+        else:
+            print(f"patch: [shell] {name} 既不在 dependencies 也不在 devDependencies —— 上游改了清单，需要更新补丁", file=sys.stderr)
+            raise SystemExit(1)
+    if moved:
+        SHELL_MANIFEST.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf8")
+    return moved
+
+
 def main() -> int:
     applied = []
     applied += apply_replacements(PACKAGE_TARGET, [(PT_IMPORT_OLD, PT_IMPORT_NEW), (PT_CALL_OLD, PT_CALL_NEW)], "package-target")
@@ -117,11 +170,14 @@ def main() -> int:
     cleaned: list[str] = []
     for path in (PACKAGE_TARGET, PREPARE_DSH):
         cleaned += neutralize_unused_imports(path)
+    promoted = promote_runtime_dev_deps()
     summary = []
     if applied:
         summary.append("定点补丁 " + "/".join(applied))
     if cleaned:
         summary.append("顺手清理失效 import: " + ", ".join(cleaned))
+    if promoted:
+        summary.append("shell 运行时依赖 devDeps→deps: " + ", ".join(promoted))
     print("patch: " + ("；".join(summary) if summary else "已打过，无需改动"))
     return 0
 
